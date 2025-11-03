@@ -14,7 +14,7 @@ const runtimePublicPath = '/@solid-refresh';
 const runtimeFilePath = require.resolve('solid-refresh/dist/solid-refresh.mjs');
 const runtimeCode = readFileSync(runtimeFilePath, 'utf-8');
 
-const isVite6 = version.startsWith('6.');
+const isVite6 = +version.split('.')[0] >= 6;
 
 /** Possible options for the extensions property */
 export interface ExtensionOptions {
@@ -80,12 +80,28 @@ export interface Options {
    */
   solid?: {
     /**
-     * Removed unnecessary closing tags from template strings. More info here:
+     * Remove unnecessary closing tags from template strings. More info here:
      * https://github.com/solidjs/solid/blob/main/CHANGELOG.md#smaller-templates
      *
      * @default false
      */
     omitNestedClosingTags?: boolean;
+
+    /**
+     * Remove the last closing tag from template strings. Enabled by default even when `omitNestedClosingTags` is disabled.
+     * Can be disabled for compatibility for some browser-like environments.
+     *
+     * @default true
+     */
+    omitLastClosingTag?: boolean;
+
+    /**
+     * Remove unnecessary quotes from template strings.
+     * Can be disabled for compatibility for some browser-like environments.
+     *
+     * @default true
+     */
+    omitQuotes?: boolean;
 
     /**
      * The name of the runtime module to import the methods from.
@@ -182,6 +198,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
   let replaceDev = false;
   let projectRoot = process.cwd();
   let isTestMode = false;
+  let solidPkgsConfig: Awaited<ReturnType<typeof crawlFrameworkPkgs>>;
 
   return {
     name: 'solid',
@@ -200,7 +217,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
       if (userConfig.esbuild !== false)
         userConfig.esbuild = { jsx: 'preserve', ...userConfig.esbuild };
 
-      const solidPkgsConfig = await crawlFrameworkPkgs({
+      solidPkgsConfig = await crawlFrameworkPkgs({
         viteUserConfig: userConfig,
         root: projectRoot || process.cwd(),
         isBuild: command === 'build',
@@ -265,7 +282,7 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
           include: [...nestedDeps, ...solidPkgsConfig.optimizeDeps.include],
           exclude: solidPkgsConfig.optimizeDeps.exclude,
         },
-        ssr: solidPkgsConfig.ssr,
+        ...(!isVite6 ? { ssr: solidPkgsConfig.ssr } : {}),
         ...(test.server ? { test } : {}),
       };
     },
@@ -286,9 +303,24 @@ export default function solidPlugin(options: Partial<Options> = {}): Plugin {
       config.resolve.conditions = [
         'solid',
         ...(replaceDev ? ['development'] : []),
-        ...(isTestMode && !opts.isSsrTargetWebworker ? ['browser'] : []),
+        ...(isTestMode && !opts.isSsrTargetWebworker && !options.ssr ? ['browser'] : []),
         ...config.resolve.conditions,
       ];
+
+      // Set resolve.noExternal and resolve.external for SSR environment (Vite 6+)
+      // Only set resolve.external if noExternal is not true (to avoid conflicts with plugins like Cloudflare)
+      if (isVite6 && name === 'ssr' && solidPkgsConfig) {
+        if (config.resolve.noExternal !== true) {
+          config.resolve.noExternal = [
+            ...(Array.isArray(config.resolve.noExternal) ? config.resolve.noExternal : []),
+            ...solidPkgsConfig.ssr.noExternal,
+          ];
+          config.resolve.external = [
+            ...(Array.isArray(config.resolve.external) ? config.resolve.external : []),
+            ...solidPkgsConfig.ssr.external,
+          ];
+        }
+      }
     },
 
     configResolved(config) {
